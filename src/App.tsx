@@ -18,14 +18,15 @@ export default function App() {
         return;
       }
 
-      // Execute link extractor script directly inside the active browser tab DOM
+      // 1. Extract all rendered book detail page URLs from the active DOM
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
           const links: string[] = [];
-          // Target all article titles and links rendered on the page
-          const anchors = document.querySelectorAll('article h2 a, article .entry-title a, h2.entry-title a, .post-title a, article a[href*="oceanofpdf.com"]');
-          
+          const anchors = document.querySelectorAll(
+            'article h2 a, article .entry-title a, h2.entry-title a, .post-title a'
+          );
+
           anchors.forEach((el) => {
             const href = (el as HTMLAnchorElement).href;
             if (
@@ -45,43 +46,72 @@ export default function App() {
       const allBookLinks = results[0]?.result || [];
 
       if (allBookLinks.length === 0) {
-        setStatus('No book links found on this page. Ensure search results are visible.');
+        setStatus('No book links found on this page.');
         setIsDownloading(false);
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books on current page. Downloading...`);
+      setStatus(`Found ${allBookLinks.length} books. Resolving download targets...`);
 
-      // Iterate through books and fetch detail page download links
+      let downloadedCount = 0;
+
+      // 2. Process each book link
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
 
         try {
           const res = await fetch(bookUrl);
-          const html = await res.text();
-          
-          // Match PDF form action URL or direct download hyperlink
-          const match = html.match(/<form[^>]+action="([^"]*pdf[^"]*)"/i) || html.match(/href="([^"]*\.pdf)"/i);
-          const downloadTarget = match ? match[1] : null;
+          const htmlText = await res.text();
 
-          if (downloadTarget) {
+          // Parse returned HTML text using DOMParser
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(htmlText, 'text/html');
+
+          // Find PDF download form or direct anchor tag
+          const pdfForm = doc.querySelector('form[action*="pdf"], form[action*="download"]') as HTMLFormElement;
+          const pdfLink = doc.querySelector('a[href*=".pdf"]') as HTMLAnchorElement;
+
+          if (pdfForm && pdfForm.action) {
+            // Build form data parameters if inputs are required
+            const formData = new FormData(pdfForm);
+            const params = new URLSearchParams();
+            formData.forEach((value, key) => params.append(key, value.toString()));
+
+            // Send POST request to get the file redirect stream
+            const postRes = await fetch(pdfForm.action, {
+              method: 'POST',
+              body: params,
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+              }
+            });
+
+            if (postRes.url) {
+              chrome.downloads.download({
+                url: postRes.url,
+                conflictAction: 'uniquify'
+              });
+              downloadedCount++;
+            }
+          } else if (pdfLink && pdfLink.href) {
             chrome.downloads.download({
-              url: downloadTarget,
+              url: pdfLink.href,
               conflictAction: 'uniquify'
             });
+            downloadedCount++;
           } else {
-            console.warn(`Could not locate download link on ${bookUrl}`);
+            console.warn(`No PDF form or link found for ${bookUrl}`);
           }
 
-          // Delay 2 seconds between books to prevent IP rate-limiting
-          await new Promise((resolve) => setTimeout(resolve, 2000));
+          // Delay 2.5 seconds to ensure Chrome handles the file stream
+          await new Promise((resolve) => setTimeout(resolve, 2500));
         } catch (err) {
           console.error(`Error processing ${bookUrl}:`, err);
         }
       }
 
-      setStatus(`Successfully processed ${allBookLinks.length} books!`);
+      setStatus(`Finished! Initiated ${downloadedCount} downloads out of ${allBookLinks.length} books.`);
     } catch (err) {
       console.error('Error during execution:', err);
       setStatus('An error occurred during execution.');
