@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "OceanofPDF Batch Downloader",
+  "version": "1.0",
+  "description": "Download all PDFs from search results in bulk.",
+  "permissions": [
+    "downloads",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://oceanofpdf.com/*",
+    "https://*.oceanofpdf.com/*"
+  ],
+  "action": {
+    "default_popup": "index.html"
+  }
+}
