@@ -8,27 +8,22 @@ export default function App() {
 
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Extracting links from active page...');
+    setStatus('Extracting book links from search page...');
 
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.id || !tab.url) {
-        setStatus('Error: Please navigate to a search page first.');
+        setStatus('Error: Please navigate to an OceanofPDF search page first.');
         setIsDownloading(false);
         return;
       }
 
-      // 1. Extract all book links from the search page
+      // 1. Grab all book detail links rendered on the current search page
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
           const links: string[] = [];
-          const selectors = [
-            'article h2 a',
-            'article .entry-title a',
-            'h2.entry-title a',
-            '.post-title a'
-          ];
+          const selectors = ['article h2 a', 'article .entry-title a', 'h2.entry-title a', '.post-title a'];
           const anchors = document.querySelectorAll(selectors.join(', '));
 
           anchors.forEach((el) => {
@@ -54,69 +49,51 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Resolving download triggers...`);
+      setStatus(`Found ${allBookLinks.length} books. Opening tabs to trigger downloads...`);
 
       let successCount = 0;
 
-      // 2. Process each detail page
+      // 2. Open each book URL in a tab to let its JS execute the download
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
 
         try {
-          const res = await fetch(bookUrl);
-          const htmlText = await res.text();
+          // Create a new background tab for the book
+          const newTab = await chrome.tabs.create({ url: bookUrl, active: false });
 
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(htmlText, 'text/html');
+          if (newTab.id) {
+            // Wait 4 seconds for the detail page DOM and download scripts to execute
+            await new Promise((resolve) => setTimeout(resolve, 4000));
 
-          // Look for direct download anchors or form submission targets
-          const directPdf = doc.querySelector('a[href*=".pdf"], a[href*="download"]') as HTMLAnchorElement;
-          const pdfForm = doc.querySelector('form') as HTMLFormElement;
+            // Execute script inside the opened tab to click the PDF button directly
+            await chrome.scripting.executeScript({
+              target: { tabId: newTab.id },
+              func: () => {
+                const pdfBtn = document.querySelector('input[value*="PDF"], button[value*="PDF"], a[href*="pdf"]') as HTMLElement;
+                const downloadForm = document.querySelector('form') as HTMLFormElement;
 
-          if (directPdf && directPdf.href) {
-            chrome.downloads.download({
-              url: directPdf.href,
-              conflictAction: 'uniquify'
+                if (pdfBtn) {
+                  pdfBtn.click();
+                } else if (downloadForm) {
+                  downloadForm.submit();
+                }
+              }
             });
+
+            // Allow 3 seconds for browser download manager to capture stream
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+
+            // Close the temporary tab
+            await chrome.tabs.remove(newTab.id);
             successCount++;
-          } else if (pdfForm) {
-            // Build form submit payload
-            let actionUrl = pdfForm.getAttribute('action') || bookUrl;
-            if (actionUrl.startsWith('/')) {
-              actionUrl = `${new URL(bookUrl).origin}${actionUrl}`;
-            }
-
-            const formData = new FormData(pdfForm);
-            const bodyParams = new URLSearchParams();
-            formData.forEach((value, key) => bodyParams.append(key, value.toString()));
-
-            const postRes = await fetch(actionUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-              },
-              body: bodyParams
-            });
-
-            // If POST request yields a direct download stream URL
-            if (postRes.url) {
-              chrome.downloads.download({
-                url: postRes.url,
-                conflictAction: 'uniquify'
-              });
-              successCount++;
-            }
           }
-
-          // Delay 3 seconds between requests to allow browser stream resolution
-          await new Promise((resolve) => setTimeout(resolve, 3000));
         } catch (err) {
-          console.error(`Failed to process ${bookUrl}:`, err);
+          console.error(`Failed on ${bookUrl}:`, err);
         }
       }
 
-      setStatus(`Finished! Initiated ${successCount} downloads out of ${allBookLinks.length} books.`);
+      setStatus(`Finished! Processed ${successCount} out of ${allBookLinks.length} books.`);
     } catch (err) {
       console.error('Execution error:', err);
       setStatus('An error occurred during execution.');
