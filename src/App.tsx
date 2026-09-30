@@ -8,24 +8,28 @@ export default function App() {
 
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Reading current page links...');
+    setStatus('Extracting links from active page...');
 
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.id || !tab.url || !tab.url.includes('oceanofpdf.com')) {
-        setStatus('Error: Please navigate to an OceanofPDF search page first.');
+      if (!tab || !tab.id || !tab.url) {
+        setStatus('Error: Please navigate to a search page first.');
         setIsDownloading(false);
         return;
       }
 
-      // 1. Extract all rendered book detail page URLs from the active DOM
+      // 1. Extract all book links from the search page
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
           const links: string[] = [];
-          const anchors = document.querySelectorAll(
-            'article h2 a, article .entry-title a, h2.entry-title a, .post-title a'
-          );
+          const selectors = [
+            'article h2 a',
+            'article .entry-title a',
+            'h2.entry-title a',
+            '.post-title a'
+          ];
+          const anchors = document.querySelectorAll(selectors.join(', '));
 
           anchors.forEach((el) => {
             const href = (el as HTMLAnchorElement).href;
@@ -33,8 +37,7 @@ export default function App() {
               href &&
               !links.includes(href) &&
               !href.includes('/page/') &&
-              !href.includes('?s=') &&
-              href.includes('oceanofpdf.com')
+              !href.includes('?s=')
             ) {
               links.push(href);
             }
@@ -51,11 +54,11 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Resolving download targets...`);
+      setStatus(`Found ${allBookLinks.length} books. Resolving download triggers...`);
 
-      let downloadedCount = 0;
+      let successCount = 0;
 
-      // 2. Process each book link
+      // 2. Process each detail page
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
@@ -64,56 +67,58 @@ export default function App() {
           const res = await fetch(bookUrl);
           const htmlText = await res.text();
 
-          // Parse returned HTML text using DOMParser
           const parser = new DOMParser();
           const doc = parser.parseFromString(htmlText, 'text/html');
 
-          // Find PDF download form or direct anchor tag
-          const pdfForm = doc.querySelector('form[action*="pdf"], form[action*="download"]') as HTMLFormElement;
-          const pdfLink = doc.querySelector('a[href*=".pdf"]') as HTMLAnchorElement;
+          // Look for direct download anchors or form submission targets
+          const directPdf = doc.querySelector('a[href*=".pdf"], a[href*="download"]') as HTMLAnchorElement;
+          const pdfForm = doc.querySelector('form') as HTMLFormElement;
 
-          if (pdfForm && pdfForm.action) {
-            // Build form data parameters if inputs are required
+          if (directPdf && directPdf.href) {
+            chrome.downloads.download({
+              url: directPdf.href,
+              conflictAction: 'uniquify'
+            });
+            successCount++;
+          } else if (pdfForm) {
+            // Build form submit payload
+            let actionUrl = pdfForm.getAttribute('action') || bookUrl;
+            if (actionUrl.startsWith('/')) {
+              actionUrl = `${new URL(bookUrl).origin}${actionUrl}`;
+            }
+
             const formData = new FormData(pdfForm);
-            const params = new URLSearchParams();
-            formData.forEach((value, key) => params.append(key, value.toString()));
+            const bodyParams = new URLSearchParams();
+            formData.forEach((value, key) => bodyParams.append(key, value.toString()));
 
-            // Send POST request to get the file redirect stream
-            const postRes = await fetch(pdfForm.action, {
+            const postRes = await fetch(actionUrl, {
               method: 'POST',
-              body: params,
               headers: {
                 'Content-Type': 'application/x-www-form-urlencoded'
-              }
+              },
+              body: bodyParams
             });
 
+            // If POST request yields a direct download stream URL
             if (postRes.url) {
               chrome.downloads.download({
                 url: postRes.url,
                 conflictAction: 'uniquify'
               });
-              downloadedCount++;
+              successCount++;
             }
-          } else if (pdfLink && pdfLink.href) {
-            chrome.downloads.download({
-              url: pdfLink.href,
-              conflictAction: 'uniquify'
-            });
-            downloadedCount++;
-          } else {
-            console.warn(`No PDF form or link found for ${bookUrl}`);
           }
 
-          // Delay 2.5 seconds to ensure Chrome handles the file stream
-          await new Promise((resolve) => setTimeout(resolve, 2500));
+          // Delay 3 seconds between requests to allow browser stream resolution
+          await new Promise((resolve) => setTimeout(resolve, 3000));
         } catch (err) {
-          console.error(`Error processing ${bookUrl}:`, err);
+          console.error(`Failed to process ${bookUrl}:`, err);
         }
       }
 
-      setStatus(`Finished! Initiated ${downloadedCount} downloads out of ${allBookLinks.length} books.`);
+      setStatus(`Finished! Initiated ${successCount} downloads out of ${allBookLinks.length} books.`);
     } catch (err) {
-      console.error('Error during execution:', err);
+      console.error('Execution error:', err);
       setStatus('An error occurred during execution.');
     } finally {
       setIsDownloading(false);
@@ -122,7 +127,7 @@ export default function App() {
 
   return (
     <div style={{ width: '320px', padding: '16px', fontFamily: 'sans-serif' }}>
-      <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>OceanofPDF Batch Downloader</h3>
+      <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>Batch File Downloader</h3>
       <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
         <div style={{ flex: 1 }}>
           <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>Start Page</label>
