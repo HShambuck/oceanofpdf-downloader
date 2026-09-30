@@ -6,9 +6,26 @@ export default function App() {
   const [status, setStatus] = useState<string>('');
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
 
+  // Helper to delay execution
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // Helper to wait until a tab finishes loading completely
+  // Helper to wait until a tab finishes loading completely
+  const waitForTabLoad = (tabId: number): Promise<void> => {
+    return new Promise((resolve) => {
+      const listener = (updatedTabId: number, changeInfo: { status?: string }) => {
+        if (updatedTabId === tabId && changeInfo.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+    });
+  };
+
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Extracting book links from search results...');
+    setStatus('Extracting book links from search page...');
 
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -18,22 +35,18 @@ export default function App() {
         return;
       }
 
-      // 1. Extract book links from the search page
+      const activeTabId = activeTab.id;
+      const originalSearchUrl = activeTab.url;
+
+      // 1. Extract book URLs from the search results page
       const results = await chrome.scripting.executeScript({
-        target: { tabId: activeTab.id },
+        target: { tabId: activeTabId },
         func: () => {
           const links: string[] = [];
-          const selectors = ['article h2 a', 'article .entry-title a', 'h2.entry-title a', '.post-title a'];
-          const anchors = document.querySelectorAll(selectors.join(', '));
-
+          const anchors = document.querySelectorAll('article h2 a, article .entry-title a, h2.entry-title a, .post-title a');
           anchors.forEach((el) => {
             const href = (el as HTMLAnchorElement).href;
-            if (
-              href &&
-              !links.includes(href) &&
-              !href.includes('/page/') &&
-              !href.includes('?s=')
-            ) {
+            if (href && !links.includes(href) && !href.includes('/page/') && !href.includes('?s=')) {
               links.push(href);
             }
           });
@@ -49,68 +62,69 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Starting batch process...`);
+      setStatus(`Found ${allBookLinks.length} books. Starting sequential step-by-step downloads...`);
       let successCount = 0;
 
-      // 2. Process each book URL sequentially
+      // 2. Loop through each book sequentially
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
-        setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
+        setStatus(`[Book ${i + 1}/${allBookLinks.length}] Navigating to book page...`);
 
-        try {
-          // Open detail page in a new background tab
-          const newTab = await chrome.tabs.create({ url: bookUrl, active: false });
+        // Step A: Navigate active tab to book detail page
+        await chrome.tabs.update(activeTabId, { url: bookUrl });
+        await waitForTabLoad(activeTabId);
+        await sleep(2000);
 
-          if (newTab.id) {
-            // Set up a listener for Chrome download stream creation
-            const downloadPromise = new Promise<boolean>((resolve) => {
-              const listener = (downloadItem: chrome.downloads.DownloadItem) => {
-                if (downloadItem) {
-                  chrome.downloads.onCreated.removeListener(listener);
-                  resolve(true);
-                }
-              };
-              chrome.downloads.onCreated.addListener(listener);
-
-              // Timeout after 18 seconds to cover the degital5.com timer
-              setTimeout(() => {
-                chrome.downloads.onCreated.removeListener(listener);
-                resolve(false);
-              }, 18000);
-            });
-
-            // Wait 3 seconds for detail page DOM to load
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-
-            // Execute PDF form submission
-            await chrome.scripting.executeScript({
-              target: { tabId: newTab.id },
-              func: () => {
-                const pdfForm = document.querySelector('form[action*="Fetching_Resource"], form') as HTMLFormElement;
-                const pdfBtn = document.querySelector('input[value*="PDF"], button[value*="PDF"], input[type="image"]') as HTMLElement;
-
-                if (pdfForm) {
-                  pdfForm.submit();
-                } else if (pdfBtn) {
-                  pdfBtn.click();
-                }
-              }
-            });
-
-            // Wait for redirect to degital5.com and timer execution to trigger Chrome download
-            const downloaded = await downloadPromise;
-            if (downloaded) {
-              successCount++;
+        // Step B: Listen for download start event
+        const downloadPromise = new Promise<boolean>((resolve) => {
+          const listener = (downloadItem: chrome.downloads.DownloadItem) => {
+            if (downloadItem) {
+              chrome.downloads.onCreated.removeListener(listener);
+              resolve(true);
             }
+          };
+          chrome.downloads.onCreated.addListener(listener);
 
-            // Close temporary tab after download trigger
-            await chrome.tabs.remove(newTab.id);
+          // Timeout after 15s if download stream doesn't fire
+          setTimeout(() => {
+            chrome.downloads.onCreated.removeListener(listener);
+            resolve(false);
+          }, 15000);
+        });
+
+        setStatus(`[Book ${i + 1}/${allBookLinks.length}] Clicking PDF download button...`);
+
+        // Step C: Trigger PDF button/form click inside book page
+        await chrome.scripting.executeScript({
+          target: { tabId: activeTabId },
+          func: () => {
+            // Find OceanofPDF red PDF button form or input
+            const pdfForm = document.querySelector('form[action*="Fetching_Resource"], form[action*="pdf"], form') as HTMLFormElement;
+            const pdfInput = document.querySelector('input[type="image"][alt*="PDF"], input[value*="PDF"], button[value*="PDF"], a[href*="pdf"]') as HTMLElement;
+
+            if (pdfForm) {
+              pdfForm.submit();
+            } else if (pdfInput) {
+              pdfInput.click();
+            }
           }
-        } catch (err) {
-          console.error(`Error on ${bookUrl}:`, err);
+        });
+
+        setStatus(`[Book ${i + 1}/${allBookLinks.length}] Waiting on redirect landing page for download to start...`);
+
+        // Step D: Await download manager event
+        const downloaded = await downloadPromise;
+        if (downloaded) {
+          successCount++;
+          setStatus(`[Book ${i + 1}/${allBookLinks.length}] Download started! Waiting 3s before next book...`);
+          await sleep(3000);
+        } else {
+          setStatus(`[Book ${i + 1}/${allBookLinks.length}] Timed out waiting for download.`);
         }
       }
 
+      // Step E: Return active tab back to original search page
+      await chrome.tabs.update(activeTabId, { url: originalSearchUrl });
       setStatus(`Finished! Successfully triggered ${successCount} out of ${allBookLinks.length} downloads.`);
     } catch (err) {
       console.error('Execution error:', err);
