@@ -8,7 +8,7 @@ export default function App() {
 
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Extracting book links from active tab...');
+    setStatus('Reading book links from active search page...');
 
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -18,7 +18,7 @@ export default function App() {
         return;
       }
 
-      // 1. Extract all rendered book detail URLs from the active search page
+      // 1. Extract book links from the search page DOM
       const results = await chrome.scripting.executeScript({
         target: { tabId: activeTab.id },
         func: () => {
@@ -49,23 +49,19 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Starting automated downloads...`);
+      setStatus(`Found ${allBookLinks.length} books. Automating detail page downloads...`);
       let successCount = 0;
 
-      // 2. Loop through each book detail page
+      // 2. Process each book detail page inside a temporary background tab
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
 
         try {
-          // Open detail page in a new background tab
           const newTab = await chrome.tabs.create({ url: bookUrl, active: false });
 
           if (newTab.id) {
-            // Wait 3 seconds for detail page DOM to load
-            await new Promise((resolve) => setTimeout(resolve, 3000));
-
-            // Set up a promise that listens for Chrome's download manager event
+            // Set up a promise to listen for Chrome download stream creation
             const downloadPromise = new Promise<boolean>((resolve) => {
               const listener = (downloadItem: chrome.downloads.DownloadItem) => {
                 if (downloadItem) {
@@ -75,39 +71,65 @@ export default function App() {
               };
               chrome.downloads.onCreated.addListener(listener);
 
-              // Timeout fallback after 12 seconds in case download fails
+              // Timeout after 15 seconds if download doesn't trigger
               setTimeout(() => {
                 chrome.downloads.onCreated.removeListener(listener);
                 resolve(false);
-              }, 12000);
+              }, 15000);
             });
 
-            // Click the PDF download form/button inside the detail page
+            // Wait 4 seconds for detail page DOM scripts to render
+            await new Promise((resolve) => setTimeout(resolve, 4000));
+
+            // Execute automated button search & click logic inside the page
             await chrome.scripting.executeScript({
               target: { tabId: newTab.id },
               func: () => {
-                const pdfForm = document.querySelector('form[action*="pdf"], form') as HTMLFormElement;
-                const pdfBtn = document.querySelector('input[value*="PDF"], button[value*="PDF"], a[href*="pdf"]') as HTMLElement;
+                // Find forms or buttons matching "pdf" across attributes
+                const allElements = Array.from(document.querySelectorAll('a, button, input, form'));
 
-                if (pdfBtn) {
-                  pdfBtn.click();
-                } else if (pdfForm) {
-                  pdfForm.submit();
+                let targetElement: HTMLElement | null = null;
+
+                for (const el of allElements) {
+                  const htmlContent = el.outerHTML.toLowerCase();
+                  if (
+                    htmlContent.includes('pdf') &&
+                    !htmlContent.includes('report') &&
+                    !htmlContent.includes('how-to')
+                  ) {
+                    targetElement = el as HTMLElement;
+                    break;
+                  }
+                }
+
+                if (targetElement) {
+                  if (targetElement.tagName === 'FORM') {
+                    (targetElement as HTMLFormElement).submit();
+                  } else {
+                    // Dispatch natural click event
+                    targetElement.click();
+                    const event = new MouseEvent('click', {
+                      bubbles: true,
+                      cancelable: true,
+                      view: window
+                    });
+                    targetElement.dispatchEvent(event);
+                  }
                 }
               }
             });
 
-            // Wait for the secondary download page countdown and Chrome download event
+            // Await Chrome download manager response
             const downloaded = await downloadPromise;
             if (downloaded) {
               successCount++;
             }
 
-            // Close background tab after processing
+            // Close temporary tab
             await chrome.tabs.remove(newTab.id);
           }
         } catch (err) {
-          console.error(`Failed processing ${bookUrl}:`, err);
+          console.error(`Error on book ${bookUrl}:`, err);
         }
       }
 
