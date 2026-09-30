@@ -8,19 +8,19 @@ export default function App() {
 
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Extracting book links from search page...');
+    setStatus('Extracting book links from active tab...');
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.id || !tab.url) {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!activeTab || !activeTab.id || !activeTab.url) {
         setStatus('Error: Please navigate to an OceanofPDF search page first.');
         setIsDownloading(false);
         return;
       }
 
-      // 1. Grab all book detail links rendered on the current search page
+      // 1. Extract all rendered book detail URLs from the active search page
       const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
+        target: { tabId: activeTab.id },
         func: () => {
           const links: string[] = [];
           const selectors = ['article h2 a', 'article .entry-title a', 'h2.entry-title a', '.post-title a'];
@@ -49,51 +49,69 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Opening tabs to trigger downloads...`);
-
+      setStatus(`Found ${allBookLinks.length} books. Starting automated downloads...`);
       let successCount = 0;
 
-      // 2. Open each book URL in a tab to let its JS execute the download
+      // 2. Loop through each book detail page
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
 
         try {
-          // Create a new background tab for the book
+          // Open detail page in a new background tab
           const newTab = await chrome.tabs.create({ url: bookUrl, active: false });
 
           if (newTab.id) {
-            // Wait 4 seconds for the detail page DOM and download scripts to execute
-            await new Promise((resolve) => setTimeout(resolve, 4000));
+            // Wait 3 seconds for detail page DOM to load
+            await new Promise((resolve) => setTimeout(resolve, 3000));
 
-            // Execute script inside the opened tab to click the PDF button directly
+            // Set up a promise that listens for Chrome's download manager event
+            const downloadPromise = new Promise<boolean>((resolve) => {
+              const listener = (downloadItem: chrome.downloads.DownloadItem) => {
+                if (downloadItem) {
+                  chrome.downloads.onCreated.removeListener(listener);
+                  resolve(true);
+                }
+              };
+              chrome.downloads.onCreated.addListener(listener);
+
+              // Timeout fallback after 12 seconds in case download fails
+              setTimeout(() => {
+                chrome.downloads.onCreated.removeListener(listener);
+                resolve(false);
+              }, 12000);
+            });
+
+            // Click the PDF download form/button inside the detail page
             await chrome.scripting.executeScript({
               target: { tabId: newTab.id },
               func: () => {
+                const pdfForm = document.querySelector('form[action*="pdf"], form') as HTMLFormElement;
                 const pdfBtn = document.querySelector('input[value*="PDF"], button[value*="PDF"], a[href*="pdf"]') as HTMLElement;
-                const downloadForm = document.querySelector('form') as HTMLFormElement;
 
                 if (pdfBtn) {
                   pdfBtn.click();
-                } else if (downloadForm) {
-                  downloadForm.submit();
+                } else if (pdfForm) {
+                  pdfForm.submit();
                 }
               }
             });
 
-            // Allow 3 seconds for browser download manager to capture stream
-            await new Promise((resolve) => setTimeout(resolve, 3000));
+            // Wait for the secondary download page countdown and Chrome download event
+            const downloaded = await downloadPromise;
+            if (downloaded) {
+              successCount++;
+            }
 
-            // Close the temporary tab
+            // Close background tab after processing
             await chrome.tabs.remove(newTab.id);
-            successCount++;
           }
         } catch (err) {
-          console.error(`Failed on ${bookUrl}:`, err);
+          console.error(`Failed processing ${bookUrl}:`, err);
         }
       }
 
-      setStatus(`Finished! Processed ${successCount} out of ${allBookLinks.length} books.`);
+      setStatus(`Finished! Successfully triggered ${successCount} out of ${allBookLinks.length} downloads.`);
     } catch (err) {
       console.error('Execution error:', err);
       setStatus('An error occurred during execution.');
@@ -104,7 +122,7 @@ export default function App() {
 
   return (
     <div style={{ width: '320px', padding: '16px', fontFamily: 'sans-serif' }}>
-      <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>Batch File Downloader</h3>
+      <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>OceanofPDF Batch Downloader</h3>
       <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
         <div style={{ flex: 1 }}>
           <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>Start Page</label>
