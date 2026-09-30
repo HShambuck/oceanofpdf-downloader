@@ -49,9 +49,15 @@ export default function App() {
         const $ = cheerio.load(html);
 
         // Target OceanofPDF book links in search results
-        $('article h2.entry-title a, article .entry-title a').each((_, el) => {
+        // Broader selector to match book links in OceanofPDF search results
+        $('h2.entry-title a, .post-title a, article a[href*="oceanofpdf.com/"]').each((_, el) => {
           const link = $(el).attr('href');
-          if (link && !allBookLinks.includes(link)) {
+          if (
+            link &&
+            !allBookLinks.includes(link) &&
+            !link.includes('/page/') &&
+            !link.includes('?s=')
+          ) {
             allBookLinks.push(link);
           }
         });
