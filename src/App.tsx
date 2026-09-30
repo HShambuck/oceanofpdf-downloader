@@ -1,29 +1,27 @@
-import { useState } from "react";
-import * as cheerio from "cheerio";
+import { useState } from 'react';
+import * as cheerio from 'cheerio';
 
 export default function App() {
   const [startPage, setStartPage] = useState<number>(1);
   const [endPage, setEndPage] = useState<number>(1);
-  const [status, setStatus] = useState<string>("");
+  const [status, setStatus] = useState<string>('');
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
 
-  // Helper to construct pagination URLs for standard, search, or category pages
+  // Helper to construct accurate pagination URLs
   const buildPageUrl = (currentUrl: string, pageNum: number): string => {
     const urlObj = new URL(currentUrl);
+    const searchParam = urlObj.searchParams.get('s');
 
-    // If there's a search query (?s=...)
-    if (urlObj.searchParams.has("s")) {
-      const searchTerm = urlObj.searchParams.get("s");
+    if (searchParam) {
+      // Search query pagination
       if (pageNum === 1) {
-        return `${urlObj.origin}/?s=${encodeURIComponent(searchTerm || "")}`;
+        return `${urlObj.origin}/?s=${encodeURIComponent(searchParam)}`;
       }
-      return `${urlObj.origin}/page/${pageNum}/?s=${encodeURIComponent(searchTerm || "")}`;
+      return `${urlObj.origin}/page/${pageNum}/?s=${encodeURIComponent(searchParam)}`;
     }
 
-    // Standard category / genre pagination
-    const cleanPath = urlObj.pathname
-      .replace(/\/page\/\d+/, "")
-      .replace(/\/$/, "");
+    // Category / genre directory pagination
+    const cleanPath = urlObj.pathname.replace(/\/page\/\d+\/?/, '').replace(/\/$/, '');
     if (pageNum === 1) {
       return `${urlObj.origin}${cleanPath}/`;
     }
@@ -32,18 +30,12 @@ export default function App() {
 
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus("Detecting current tab URL...");
+    setStatus('Detecting active tab URL...');
 
     try {
-      // 1. Get current active browser tab URL
-      const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (!tab || !tab.url || !tab.url.includes("oceanofpdf.com")) {
-        setStatus(
-          "Error: Please navigate to an OceanofPDF search or list page first.",
-        );
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url || !tab.url.includes('oceanofpdf.com')) {
+        setStatus('Error: Please navigate to an OceanofPDF search or list page first.');
         setIsDownloading(false);
         return;
       }
@@ -51,32 +43,28 @@ export default function App() {
       const activeUrl = tab.url;
       let allBookLinks: string[] = [];
 
-      // Fix 1 & 2: Loop through requested pagination range with proper selector extraction
       for (let page = startPage; page <= endPage; page++) {
         const targetPageUrl = buildPageUrl(activeUrl, page);
-        setStatus(`Scraping search page ${page} of ${endPage}...`);
+        setStatus(`Scraping page ${page} of ${endPage}...`);
 
         const res = await fetch(targetPageUrl);
         const html = await res.text();
         const $ = cheerio.load(html);
 
-        // Target OceanofPDF book links in search results
-        // Broader selector to match book links in OceanofPDF search results
-        $(
-          "article h2 a, article .entry-title a, h2.entry-title a, .post-title a",
-        ).each((_, el) => {
-          let link = $(el).attr("href");
+        // Target book title links from search results
+        $('article h2 a, article .entry-title a, h2.entry-title a, .post-title a').each((_, el) => {
+          let link = $(el).attr('href');
           if (link) {
-            // Resolve relative URLs to absolute URLs
-            if (link.startsWith("/")) {
+            // Ensure link is an absolute URL
+            if (link.startsWith('/')) {
               link = `${new URL(activeUrl).origin}${link}`;
             }
 
             if (
               !allBookLinks.includes(link) &&
-              !link.includes("/page/") &&
-              !link.includes("?s=") &&
-              link.includes("oceanofpdf.com")
+              !link.includes('/page/') &&
+              !link.includes('?s=') &&
+              link.includes('oceanofpdf.com')
             ) {
               allBookLinks.push(link);
             }
@@ -85,16 +73,13 @@ export default function App() {
       }
 
       if (allBookLinks.length === 0) {
-        setStatus(
-          "No book links found on these pages. Check your page numbers or search query.",
-        );
+        setStatus('No book links found on these pages. Check your page numbers or search query.');
         setIsDownloading(false);
         return;
       }
 
       setStatus(`Found ${allBookLinks.length} books. Starting downloads...`);
 
-      // Fix 3: Loop through detail pages and resolve actual PDF targets
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
@@ -104,22 +89,19 @@ export default function App() {
           const html = await res.text();
           const $ = cheerio.load(html);
 
-          // Check for download form submit action or direct pdf hyperlink
           const pdfForm = $('form[action*="pdf"], form[action*="download"]');
-          let downloadTarget =
-            pdfForm.attr("action") || $('a[href*=".pdf"]').attr("href");
+          let downloadTarget = pdfForm.attr('action') || $('a[href*=".pdf"]').attr('href');
 
           if (downloadTarget) {
-            // Trigger Chrome native download manager
             chrome.downloads.download({
               url: downloadTarget,
-              conflictAction: "uniquify",
+              conflictAction: 'uniquify'
             });
           } else {
             console.warn(`Could not locate download button on ${bookUrl}`);
           }
 
-          // 2-second delay to avoid triggering server rate limits
+          // Delay 2 seconds between books to prevent IP blocking
           await new Promise((resolve) => setTimeout(resolve, 2000));
         } catch (err) {
           console.error(`Error downloading book from ${bookUrl}:`, err);
@@ -128,77 +110,56 @@ export default function App() {
 
       setStatus(`Completed processing ${allBookLinks.length} books!`);
     } catch (err) {
-      console.error("Error during batch execution:", err);
-      setStatus("An error occurred during execution.");
+      console.error('Error during batch execution:', err);
+      setStatus('An error occurred during execution.');
     } finally {
       setIsDownloading(false);
     }
   };
 
   return (
-    <div style={{ width: "320px", padding: "16px", fontFamily: "sans-serif" }}>
-      <h3 style={{ margin: "0 0 12px 0", fontSize: "16px" }}>
-        OceanofPDF Batch Downloader
-      </h3>
-
-      <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+    <div style={{ width: '320px', padding: '16px', fontFamily: 'sans-serif' }}>
+      <h3 style={{ margin: '0 0 12px 0', fontSize: '16px' }}>OceanofPDF Batch Downloader</h3>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
         <div style={{ flex: 1 }}>
-          <label
-            style={{ fontSize: "12px", display: "block", marginBottom: "4px" }}
-          >
-            Start Page
-          </label>
+          <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>Start Page</label>
           <input
             type="number"
             min="1"
             value={startPage}
             onChange={(e) => setStartPage(Number(e.target.value))}
-            style={{ width: "100%", padding: "6px", boxSizing: "border-box" }}
+            style={{ width: '100%', padding: '6px', boxSizing: 'border-box' }}
           />
         </div>
-
         <div style={{ flex: 1 }}>
-          <label
-            style={{ fontSize: "12px", display: "block", marginBottom: "4px" }}
-          >
-            End Page
-          </label>
+          <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>End Page</label>
           <input
             type="number"
             min="1"
             value={endPage}
             onChange={(e) => setEndPage(Number(e.target.value))}
-            style={{ width: "100%", padding: "6px", boxSizing: "border-box" }}
+            style={{ width: '100%', padding: '6px', boxSizing: 'border-box' }}
           />
         </div>
       </div>
-
       <button
         onClick={crawlAndDownload}
         disabled={isDownloading}
         style={{
-          width: "100%",
-          padding: "10px",
-          backgroundColor: isDownloading ? "#999" : "#007bff",
-          color: "#fff",
-          border: "none",
-          borderRadius: "4px",
-          fontWeight: "bold",
-          cursor: isDownloading ? "not-allowed" : "pointer",
+          width: '100%',
+          padding: '10px',
+          backgroundColor: isDownloading ? '#999' : '#007bff',
+          color: '#fff',
+          border: 'none',
+          borderRadius: '4px',
+          fontWeight: 'bold',
+          cursor: isDownloading ? 'not-allowed' : 'pointer'
         }}
       >
-        {isDownloading ? "Downloading..." : "Start Download All"}
+        {isDownloading ? 'Downloading...' : 'Start Download All'}
       </button>
-
       {status && (
-        <p
-          style={{
-            marginTop: "12px",
-            fontSize: "12px",
-            color: "#444",
-            wordBreak: "break-word",
-          }}
-        >
+        <p style={{ marginTop: '12px', fontSize: '12px', color: '#444', wordBreak: 'break-word' }}>
           {status}
         </p>
       )}
