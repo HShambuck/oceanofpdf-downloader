@@ -6,11 +6,12 @@
   "permissions": [
     "downloads",
     "activeTab",
-    "scripting"
+    "scripting",
+    "tabs"
   ],
   "host_permissions": [
-    "https://oceanofpdf.com/*",
-    "https://*.oceanofpdf.com/*"
+    "https://*.oceanofpdf.com/*",
+    "https://oceanofpdf.com/*"
   ],
   "action": {
     "default_popup": "index.html"

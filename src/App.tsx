@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import * as cheerio from 'cheerio';
 
 export default function App() {
   const [startPage, setStartPage] = useState<number>(1);
@@ -7,79 +6,53 @@ export default function App() {
   const [status, setStatus] = useState<string>('');
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
 
-  // Helper to construct accurate pagination URLs
-  const buildPageUrl = (currentUrl: string, pageNum: number): string => {
-    const urlObj = new URL(currentUrl);
-    const searchParam = urlObj.searchParams.get('s');
-
-    if (searchParam) {
-      // Search query pagination
-      if (pageNum === 1) {
-        return `${urlObj.origin}/?s=${encodeURIComponent(searchParam)}`;
-      }
-      return `${urlObj.origin}/page/${pageNum}/?s=${encodeURIComponent(searchParam)}`;
-    }
-
-    // Category / genre directory pagination
-    const cleanPath = urlObj.pathname.replace(/\/page\/\d+\/?/, '').replace(/\/$/, '');
-    if (pageNum === 1) {
-      return `${urlObj.origin}${cleanPath}/`;
-    }
-    return `${urlObj.origin}${cleanPath}/page/${pageNum}/`;
-  };
-
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Detecting active tab URL...');
+    setStatus('Reading current page links...');
 
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.url || !tab.url.includes('oceanofpdf.com')) {
-        setStatus('Error: Please navigate to an OceanofPDF search or list page first.');
+      if (!tab || !tab.id || !tab.url || !tab.url.includes('oceanofpdf.com')) {
+        setStatus('Error: Please navigate to an OceanofPDF search page first.');
         setIsDownloading(false);
         return;
       }
 
-      const activeUrl = tab.url;
-      let allBookLinks: string[] = [];
-
-      for (let page = startPage; page <= endPage; page++) {
-        const targetPageUrl = buildPageUrl(activeUrl, page);
-        setStatus(`Scraping page ${page} of ${endPage}...`);
-
-        const res = await fetch(targetPageUrl);
-        const html = await res.text();
-        const $ = cheerio.load(html);
-
-        // Target book title links from search results
-        $('article h2 a, article .entry-title a, h2.entry-title a, .post-title a').each((_, el) => {
-          let link = $(el).attr('href');
-          if (link) {
-            // Ensure link is an absolute URL
-            if (link.startsWith('/')) {
-              link = `${new URL(activeUrl).origin}${link}`;
-            }
-
+      // Execute link extractor script directly inside the active browser tab DOM
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const links: string[] = [];
+          // Target all article titles and links rendered on the page
+          const anchors = document.querySelectorAll('article h2 a, article .entry-title a, h2.entry-title a, .post-title a, article a[href*="oceanofpdf.com"]');
+          
+          anchors.forEach((el) => {
+            const href = (el as HTMLAnchorElement).href;
             if (
-              !allBookLinks.includes(link) &&
-              !link.includes('/page/') &&
-              !link.includes('?s=') &&
-              link.includes('oceanofpdf.com')
+              href &&
+              !links.includes(href) &&
+              !href.includes('/page/') &&
+              !href.includes('?s=') &&
+              href.includes('oceanofpdf.com')
             ) {
-              allBookLinks.push(link);
+              links.push(href);
             }
-          }
-        });
-      }
+          });
+          return links;
+        }
+      });
+
+      const allBookLinks = results[0]?.result || [];
 
       if (allBookLinks.length === 0) {
-        setStatus('No book links found on these pages. Check your page numbers or search query.');
+        setStatus('No book links found on this page. Ensure search results are visible.');
         setIsDownloading(false);
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Starting downloads...`);
+      setStatus(`Found ${allBookLinks.length} books on current page. Downloading...`);
 
+      // Iterate through books and fetch detail page download links
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
@@ -87,10 +60,10 @@ export default function App() {
         try {
           const res = await fetch(bookUrl);
           const html = await res.text();
-          const $ = cheerio.load(html);
-
-          const pdfForm = $('form[action*="pdf"], form[action*="download"]');
-          let downloadTarget = pdfForm.attr('action') || $('a[href*=".pdf"]').attr('href');
+          
+          // Match PDF form action URL or direct download hyperlink
+          const match = html.match(/<form[^>]+action="([^"]*pdf[^"]*)"/i) || html.match(/href="([^"]*\.pdf)"/i);
+          const downloadTarget = match ? match[1] : null;
 
           if (downloadTarget) {
             chrome.downloads.download({
@@ -98,19 +71,19 @@ export default function App() {
               conflictAction: 'uniquify'
             });
           } else {
-            console.warn(`Could not locate download button on ${bookUrl}`);
+            console.warn(`Could not locate download link on ${bookUrl}`);
           }
 
-          // Delay 2 seconds between books to prevent IP blocking
+          // Delay 2 seconds between books to prevent IP rate-limiting
           await new Promise((resolve) => setTimeout(resolve, 2000));
         } catch (err) {
-          console.error(`Error downloading book from ${bookUrl}:`, err);
+          console.error(`Error processing ${bookUrl}:`, err);
         }
       }
 
-      setStatus(`Completed processing ${allBookLinks.length} books!`);
+      setStatus(`Successfully processed ${allBookLinks.length} books!`);
     } catch (err) {
-      console.error('Error during batch execution:', err);
+      console.error('Error during execution:', err);
       setStatus('An error occurred during execution.');
     } finally {
       setIsDownloading(false);
