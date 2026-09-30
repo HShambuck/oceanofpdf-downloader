@@ -20,15 +20,22 @@ export default function App() {
         return;
       }
 
-      // 1. Extract book links from search results page
+      // 1. Extract all book detail URLs from the search results DOM
       const results = await chrome.scripting.executeScript({
         target: { tabId: activeTab.id },
         func: () => {
           const links: string[] = [];
-          const anchors = document.querySelectorAll('article h2 a, article .entry-title a, h2.entry-title a, .post-title a');
+          const selectors = ['article h2 a', 'article .entry-title a', 'h2.entry-title a', '.post-title a'];
+          const anchors = document.querySelectorAll(selectors.join(', '));
+
           anchors.forEach((el) => {
             const href = (el as HTMLAnchorElement).href;
-            if (href && !links.includes(href) && !href.includes('/page/') && !href.includes('?s=')) {
+            if (
+              href &&
+              !links.includes(href) &&
+              !href.includes('/page/') &&
+              !href.includes('?s=')
+            ) {
               links.push(href);
             }
           });
@@ -44,10 +51,10 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Automating downloads in background tabs...`);
+      setStatus(`Found ${allBookLinks.length} books. Automating form submissions...`);
       let successCount = 0;
 
-      // 2. Process each book URL in a new background tab
+      // 2. Loop through each book detail page in a background tab
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`[Book ${i + 1}/${allBookLinks.length}] Opening background tab...`);
@@ -56,7 +63,7 @@ export default function App() {
           const newTab = await chrome.tabs.create({ url: bookUrl, active: false });
 
           if (newTab.id) {
-            // Set up listener for Chrome download stream event
+            // Listen for Chrome download stream creation
             const downloadPromise = new Promise<boolean>((resolve) => {
               const listener = (downloadItem: chrome.downloads.DownloadItem) => {
                 if (downloadItem) {
@@ -66,35 +73,40 @@ export default function App() {
               };
               chrome.downloads.onCreated.addListener(listener);
 
-              // 20s timeout window to allow for degital5.com redirect countdown
+              // 20s timeout window to allow degital5.com timer execution
               setTimeout(() => {
                 chrome.downloads.onCreated.removeListener(listener);
                 resolve(false);
               }, 20000);
             });
 
-            // Wait 3 seconds for page setup
+            // Wait 3 seconds for detail page DOM to load
             await sleep(3000);
 
-            setStatus(`[Book ${i + 1}/${allBookLinks.length}] Waiting for PDF button & submitting...`);
+            setStatus(`[Book ${i + 1}/${allBookLinks.length}] Submitting Fetching_Resource form...`);
 
-            // Execute resilient polling script to locate and click the PDF form/button
+            // Execute script targeting the Fetching_Resource form element
             await chrome.scripting.executeScript({
               target: { tabId: newTab.id },
-              func: async () => {
-                const maxAttempts = 16; // 16 * 500ms = 8 seconds polling
-                for (let attempt = 0; attempt < maxAttempts; attempt++) {
-                  const pdfForm = document.querySelector('form[action*="Fetching_Resource"], form[action*="pdf"], form') as HTMLFormElement;
-                  const pdfInput = document.querySelector('input[type="image"][alt*="PDF"], input[value*="PDF"], button[value*="PDF"], a[href*="pdf"]') as HTMLElement;
+              func: () => {
+                // Find form by exact action or inner input image
+                const forms = Array.from(document.querySelectorAll('form'));
+                let targetForm: HTMLFormElement | null = null;
 
-                  if (pdfForm) {
-                    pdfForm.submit();
-                    return true;
-                  } else if (pdfInput) {
-                    pdfInput.click();
-                    return true;
+                for (const form of forms) {
+                  const action = form.getAttribute('action') || '';
+                  const htmlContent = form.innerHTML.toLowerCase();
+
+                  if (action.includes('Fetching_Resource') || htmlContent.includes('pdf')) {
+                    targetForm = form;
+                    break;
                   }
-                  await new Promise((r) => setTimeout(r, 500));
+                }
+
+                if (targetForm) {
+                  // Direct HTMLFormElement submission
+                  HTMLFormElement.prototype.submit.call(targetForm);
+                  return true;
                 }
                 return false;
               }
@@ -111,12 +123,12 @@ export default function App() {
               setStatus(`[Book ${i + 1}/${allBookLinks.length}] Download timed out.`);
             }
 
-            // Close background tab after stream trigger
+            // Close background tab after processing
             await chrome.tabs.remove(newTab.id);
             await sleep(1500);
           }
         } catch (err) {
-          console.error(`Error on book ${bookUrl}:`, err);
+          console.error(`Error processing ${bookUrl}:`, err);
         }
       }
 
