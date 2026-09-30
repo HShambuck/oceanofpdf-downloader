@@ -8,7 +8,7 @@ export default function App() {
 
   const crawlAndDownload = async () => {
     setIsDownloading(true);
-    setStatus('Reading book links from active search page...');
+    setStatus('Extracting book links from search results...');
 
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -18,7 +18,7 @@ export default function App() {
         return;
       }
 
-      // 1. Extract book links from the search page DOM
+      // 1. Extract book links from the search page
       const results = await chrome.scripting.executeScript({
         target: { tabId: activeTab.id },
         func: () => {
@@ -49,19 +49,20 @@ export default function App() {
         return;
       }
 
-      setStatus(`Found ${allBookLinks.length} books. Automating detail page downloads...`);
+      setStatus(`Found ${allBookLinks.length} books. Starting batch process...`);
       let successCount = 0;
 
-      // 2. Process each book detail page inside a temporary background tab
+      // 2. Process each book URL sequentially
       for (let i = 0; i < allBookLinks.length; i++) {
         const bookUrl = allBookLinks[i];
         setStatus(`Processing book ${i + 1} of ${allBookLinks.length}...`);
 
         try {
+          // Open detail page in a new background tab
           const newTab = await chrome.tabs.create({ url: bookUrl, active: false });
 
           if (newTab.id) {
-            // Set up a promise to listen for Chrome download stream creation
+            // Set up a listener for Chrome download stream creation
             const downloadPromise = new Promise<boolean>((resolve) => {
               const listener = (downloadItem: chrome.downloads.DownloadItem) => {
                 if (downloadItem) {
@@ -71,65 +72,42 @@ export default function App() {
               };
               chrome.downloads.onCreated.addListener(listener);
 
-              // Timeout after 15 seconds if download doesn't trigger
+              // Timeout after 18 seconds to cover the degital5.com timer
               setTimeout(() => {
                 chrome.downloads.onCreated.removeListener(listener);
                 resolve(false);
-              }, 15000);
+              }, 18000);
             });
 
-            // Wait 4 seconds for detail page DOM scripts to render
-            await new Promise((resolve) => setTimeout(resolve, 4000));
+            // Wait 3 seconds for detail page DOM to load
+            await new Promise((resolve) => setTimeout(resolve, 3000));
 
-            // Execute automated button search & click logic inside the page
+            // Execute PDF form submission
             await chrome.scripting.executeScript({
               target: { tabId: newTab.id },
               func: () => {
-                // Find forms or buttons matching "pdf" across attributes
-                const allElements = Array.from(document.querySelectorAll('a, button, input, form'));
+                const pdfForm = document.querySelector('form[action*="Fetching_Resource"], form') as HTMLFormElement;
+                const pdfBtn = document.querySelector('input[value*="PDF"], button[value*="PDF"], input[type="image"]') as HTMLElement;
 
-                let targetElement: HTMLElement | null = null;
-
-                for (const el of allElements) {
-                  const htmlContent = el.outerHTML.toLowerCase();
-                  if (
-                    htmlContent.includes('pdf') &&
-                    !htmlContent.includes('report') &&
-                    !htmlContent.includes('how-to')
-                  ) {
-                    targetElement = el as HTMLElement;
-                    break;
-                  }
-                }
-
-                if (targetElement) {
-                  if (targetElement.tagName === 'FORM') {
-                    (targetElement as HTMLFormElement).submit();
-                  } else {
-                    // Dispatch natural click event
-                    targetElement.click();
-                    const event = new MouseEvent('click', {
-                      bubbles: true,
-                      cancelable: true,
-                      view: window
-                    });
-                    targetElement.dispatchEvent(event);
-                  }
+                if (pdfForm) {
+                  pdfForm.submit();
+                } else if (pdfBtn) {
+                  pdfBtn.click();
                 }
               }
             });
 
-            // Await Chrome download manager response
+            // Wait for redirect to degital5.com and timer execution to trigger Chrome download
             const downloaded = await downloadPromise;
             if (downloaded) {
               successCount++;
             }
 
-            // Close temporary tab
+            // Close temporary tab after download trigger
             await chrome.tabs.remove(newTab.id);
           }
         } catch (err) {
-          console.error(`Error on book ${bookUrl}:`, err);
+          console.error(`Error on ${bookUrl}:`, err);
         }
       }
 
