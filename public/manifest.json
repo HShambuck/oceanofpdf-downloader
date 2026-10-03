@@ -2,16 +2,25 @@
   "manifest_version": 3,
   "name": "OceanofPDF Batch Downloader",
   "version": "1.0",
-  "description": "Download all PDFs from search results in bulk.",
   "permissions": [
-    "downloads",
+    "tabs",
     "activeTab",
     "scripting",
-    "tabs"
+    "downloads",
+    "storage"
   ],
   "host_permissions": [
-    "https://*.oceanofpdf.com/*",
-    "https://oceanofpdf.com/*"
+    "https://oceanofpdf.com/*",
+    "https://*.degital5.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.ts"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://oceanofpdf.com/*", "https://*.degital5.com/*"],
+      "js": ["src/content.ts"]
+    }
   ],
   "action": {
     "default_popup": "index.html"
