@@ -1,24 +1,41 @@
 import { useState, useEffect } from 'react';
 
+interface BatchProgress {
+  current: number;
+  total: number;
+}
+
 export default function App() {
   const [startPage, setStartPage] = useState<number>(1);
   const [endPage, setEndPage] = useState<number>(1);
   const [status, setStatus] = useState<string>('');
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
-  const [progress, setProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
+  const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 0 });
 
   useEffect(() => {
     chrome.storage.local.get(['batchStatus', 'batchIsRunning', 'batchProgress'], (result) => {
-      if (result.batchStatus) setStatus(result.batchStatus);
-      if (result.batchIsRunning !== undefined) setIsDownloading(result.batchIsRunning);
-      if (result.batchProgress) setProgress(result.batchProgress);
+      if (typeof result.batchStatus === 'string') {
+        setStatus(result.batchStatus);
+      }
+      if (typeof result.batchIsRunning === 'boolean') {
+        setIsDownloading(result.batchIsRunning);
+      }
+      if (result.batchProgress && typeof result.batchProgress === 'object') {
+        setProgress(result.batchProgress as BatchProgress);
+      }
     });
 
     const listener = (message: any) => {
       if (message.type === 'STATUS_UPDATE') {
-        if (message.batchStatus) setStatus(message.batchStatus);
-        if (message.batchIsRunning !== undefined) setIsDownloading(message.batchIsRunning);
-        if (message.batchProgress) setProgress(message.batchProgress);
+        if (typeof message.batchStatus === 'string') {
+          setStatus(message.batchStatus);
+        }
+        if (typeof message.batchIsRunning === 'boolean') {
+          setIsDownloading(message.batchIsRunning);
+        }
+        if (message.batchProgress && typeof message.batchProgress === 'object') {
+          setProgress(message.batchProgress as BatchProgress);
+        }
       }
     };
 
