@@ -4,66 +4,98 @@ interface QueueState {
   queue: string[];
   currentIndex: number;
   activeTabId: number | null;
+  isRunning: boolean;
 }
 
 let state: QueueState = {
   queue: [],
   currentIndex: 0,
-  activeTabId: null
+  activeTabId: null,
+  isRunning: false
 };
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'START_BATCH') {
     state.queue = message.links;
     state.currentIndex = 0;
+    state.isRunning = true;
+    updateStorageAndBroadcast(`Starting batch download of ${state.queue.length} items...`);
     processNextInQueue();
     sendResponse({ status: 'started' });
+  } else if (message.type === 'GET_STATUS') {
+    sendResponse({
+      isRunning: state.isRunning,
+      currentIndex: state.currentIndex,
+      total: state.queue.length
+    });
   }
   return true;
 });
 
+async function updateStorageAndBroadcast(statusText: string) {
+  const payload = {
+    batchStatus: statusText,
+    batchIsRunning: state.isRunning,
+    batchProgress: {
+      current: state.currentIndex,
+      total: state.queue.length
+    }
+  };
+  await chrome.storage.local.set(payload);
+  chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', ...payload });
+}
+
 async function processNextInQueue() {
   if (state.currentIndex >= state.queue.length) {
-    chrome.runtime.sendMessage({ type: 'BATCH_COMPLETE' });
+    state.isRunning = false;
+    if (state.activeTabId) {
+      try {
+        await chrome.tabs.remove(state.activeTabId);
+      } catch (e) {}
+      state.activeTabId = null;
+    }
+    await updateStorageAndBroadcast('Batch process completed!');
     return;
   }
 
   const currentUrl = state.queue[state.currentIndex];
-  chrome.runtime.sendMessage({
-    type: 'STATUS_UPDATE',
-    message: `[Book ${state.currentIndex + 1}/${state.queue.length}] Opening detail page...`
-  });
+  const progressMsg = `Downloading ${state.currentIndex + 1} of ${state.queue.length}...`;
+  await updateStorageAndBroadcast(progressMsg);
 
-  // Open book URL in active tab
-  const tab = await chrome.tabs.create({ url: currentUrl, active: true });
-  state.activeTabId = tab.id || null;
+  if (!state.activeTabId) {
+    const tab = await chrome.tabs.create({ url: currentUrl, active: true });
+    state.activeTabId = tab.id || null;
+  } else {
+    try {
+      await chrome.tabs.update(state.activeTabId, { url: currentUrl, active: true });
+    } catch (e) {
+      const tab = await chrome.tabs.create({ url: currentUrl, active: true });
+      state.activeTabId = tab.id || null;
+    }
+  }
 
-  // Setup download listener for this book item
+  let Handled = false;
+
   const downloadListener = (downloadItem: chrome.downloads.DownloadItem) => {
-    if (downloadItem) {
+    if (downloadItem && !Handled) {
+      Handled = true;
       chrome.downloads.onCreated.removeListener(downloadListener);
-      cleanupAndAdvance();
+      advanceQueue();
     }
   };
 
   chrome.downloads.onCreated.addListener(downloadListener);
 
-  // 25s safety timeout
   setTimeout(() => {
-    chrome.downloads.onCreated.removeListener(downloadListener);
-    cleanupAndAdvance();
+    if (!Handled) {
+      Handled = true;
+      chrome.downloads.onCreated.removeListener(downloadListener);
+      advanceQueue();
+    }
   }, 25000);
 }
 
-async function cleanupAndAdvance() {
-  if (state.activeTabId) {
-    try {
-      await chrome.tabs.remove(state.activeTabId);
-    } catch (e) {
-      // Tab might have already closed
-    }
-    state.activeTabId = null;
-  }
+function advanceQueue() {
   state.currentIndex++;
   setTimeout(() => {
     processNextInQueue();
