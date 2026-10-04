@@ -1,7 +1,6 @@
 export function parsePaginationFromDOM(): number | null {
   const numbers: number[] = [];
 
-  // Check standard pagination anchors and text containers
   const selectors = [
     '.page-numbers',
     'a.page-numbers',
@@ -19,7 +18,6 @@ export function parsePaginationFromDOM(): number | null {
     });
   });
 
-  // Fallback: Parse explicit text patterns like "Page 1 of 231"
   const bodyText = document.body.innerText || '';
   const match = bodyText.match(/Page\s+\d+\s+of\s+(\d+)/i);
   if (match && match[1]) {

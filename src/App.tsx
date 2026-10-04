@@ -57,7 +57,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      // Not on search results page or permission restricted
+      // Permission restriction or not on target page
     }
   };
 
