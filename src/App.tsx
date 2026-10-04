@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 
+type BatchStatusState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED';
+
 interface BatchProgress {
   current: number;
   total: number;
@@ -8,31 +10,28 @@ interface BatchProgress {
 export default function App() {
   const [startPage, setStartPage] = useState<number>(1);
   const [endPage, setEndPage] = useState<number>(1);
-  const [status, setStatus] = useState<string>('');
-  const [isDownloading, setIsDownloading] = useState<boolean>(false);
+  const [maxPages, setMaxPages] = useState<number | null>(null);
+  const [statusText, setStatusText] = useState<string>('');
+  const [batchState, setBatchState] = useState<BatchStatusState>('IDLE');
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 0 });
 
   useEffect(() => {
-    chrome.storage.local.get(['batchStatus', 'batchIsRunning', 'batchProgress'], (result) => {
-      if (typeof result.batchStatus === 'string') {
-        setStatus(result.batchStatus);
-      }
-      if (typeof result.batchIsRunning === 'boolean') {
-        setIsDownloading(result.batchIsRunning);
-      }
+    // Load stored state on popup open
+    chrome.storage.local.get(['batchStatusText', 'batchState', 'batchProgress'], (result) => {
+      if (typeof result.batchStatusText === 'string') setStatusText(result.batchStatusText);
+      if (typeof result.batchState === 'string') setBatchState(result.batchState as BatchStatusState);
       if (result.batchProgress && typeof result.batchProgress === 'object') {
         setProgress(result.batchProgress as BatchProgress);
       }
     });
 
+    // Detect total pages on active OceanofPDF tab
+    detectTotalPages();
+
     const listener = (message: any) => {
       if (message.type === 'STATUS_UPDATE') {
-        if (typeof message.batchStatus === 'string') {
-          setStatus(message.batchStatus);
-        }
-        if (typeof message.batchIsRunning === 'boolean') {
-          setIsDownloading(message.batchIsRunning);
-        }
+        if (typeof message.batchStatusText === 'string') setStatusText(message.batchStatusText);
+        if (typeof message.batchState === 'string') setBatchState(message.batchState as BatchStatusState);
         if (message.batchProgress && typeof message.batchProgress === 'object') {
           setProgress(message.batchProgress as BatchProgress);
         }
@@ -43,14 +42,39 @@ export default function App() {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
 
+  const detectTotalPages = async () => {
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab?.id && activeTab.url?.includes('oceanofpdf.com')) {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: activeTab.id },
+          func: () => {
+            const pageNumbers: number[] = [];
+            const pageElements = document.querySelectorAll('.page-numbers, a.page-numbers, span.page-numbers');
+            pageElements.forEach((el) => {
+              const num = parseInt(el.textContent?.replace(/,/g, '') || '', 10);
+              if (!isNaN(num)) pageNumbers.push(num);
+            });
+            return pageNumbers.length > 0 ? Math.max(...pageNumbers) : null;
+          }
+        });
+        const detectedMax = results[0]?.result;
+        if (detectedMax) {
+          setMaxPages(detectedMax);
+          setEndPage(detectedMax);
+        }
+      }
+    } catch (e) {
+      // Not on search page or execution restricted
+    }
+  };
+
   const startBatch = async () => {
-    setIsDownloading(true);
-    setStatus('Gathering book URLs across selected pages...');
+    setStatusText('Gathering book URLs across selected pages...');
 
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!activeTab || !activeTab.id) {
-      setStatus('Error: Open OceanofPDF search results tab first.');
-      setIsDownloading(false);
+      setStatusText('Error: Please open OceanofPDF search results tab first.');
       return;
     }
 
@@ -61,14 +85,14 @@ export default function App() {
 
     for (let page = startPage; page <= endPage; page++) {
       const pageUrl = page === 1 ? baseUrl : `${baseUrl.replace(/\/$/, '')}/page/${page}/`;
-      setStatus(`Scanning page ${page} of ${endPage}...`);
+      setStatusText(`Scanning page ${page} of ${endPage}...`);
 
       if (page === startPage && currentUrl === pageUrl) {
         const results = await extractLinksFromTab(activeTab.id);
         allLinks.push(...results);
       } else {
         const tempTab = await chrome.tabs.create({ url: pageUrl, active: false });
-        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await new Promise((resolve) => setTimeout(resolve, 2500));
         if (tempTab.id) {
           const results = await extractLinksFromTab(tempTab.id);
           allLinks.push(...results);
@@ -80,13 +104,16 @@ export default function App() {
     const uniqueLinks = Array.from(new Set(allLinks));
 
     if (uniqueLinks.length === 0) {
-      setStatus('No downloadable item links found.');
-      setIsDownloading(false);
+      setStatusText('No downloadable book links found.');
       return;
     }
 
     chrome.runtime.sendMessage({ type: 'START_BATCH', links: uniqueLinks });
   };
+
+  const pauseBatch = () => chrome.runtime.sendMessage({ type: 'PAUSE_BATCH' });
+  const resumeBatch = () => chrome.runtime.sendMessage({ type: 'RESUME_BATCH' });
+  const stopBatch = () => chrome.runtime.sendMessage({ type: 'STOP_BATCH' });
 
   const extractLinksFromTab = async (tabId: number): Promise<string[]> => {
     try {
@@ -110,51 +137,116 @@ export default function App() {
     }
   };
 
+  const isRunning = batchState === 'RUNNING';
+  const isPaused = batchState === 'PAUSED';
+
   return (
-    <div style={{ width: '320px', padding: '16px', fontFamily: 'sans-serif' }}>
+    <div style={{ width: '330px', padding: '16px', fontFamily: 'sans-serif' }}>
       <h3 style={{ margin: '0 0 12px 0' }}>OceanofPDF Downloader</h3>
 
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
         <div style={{ flex: 1 }}>
           <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>From Page:</label>
           <input
             type="number"
             min="1"
             value={startPage}
-            disabled={isDownloading}
+            disabled={isRunning || isPaused}
             onChange={(e) => setStartPage(Math.max(1, parseInt(e.target.value) || 1))}
             style={{ width: '100%', padding: '6px', boxSizing: 'border-box' }}
           />
         </div>
         <div style={{ flex: 1 }}>
-          <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>To Page:</label>
+          <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>
+            To Page: {maxPages ? `(Max: ${maxPages})` : ''}
+          </label>
           <input
             type="number"
             min={startPage}
+            max={maxPages || undefined}
             value={endPage}
-            disabled={isDownloading}
+            disabled={isRunning || isPaused}
             onChange={(e) => setEndPage(Math.max(startPage, parseInt(e.target.value) || 1))}
             style={{ width: '100%', padding: '6px', boxSizing: 'border-box' }}
           />
         </div>
       </div>
 
-      <button
-        onClick={startBatch}
-        disabled={isDownloading}
-        style={{
-          width: '100%',
-          padding: '10px',
-          backgroundColor: isDownloading ? '#888' : '#007bff',
-          color: '#fff',
-          border: 'none',
-          borderRadius: '4px',
-          fontWeight: 'bold',
-          cursor: isDownloading ? 'not-allowed' : 'pointer'
-        }}
-      >
-        {isDownloading ? 'Processing Batch...' : 'Start Download'}
-      </button>
+      {maxPages && (
+        <p style={{ fontSize: '11px', color: '#666', margin: '0 0 12px 0' }}>
+          Downloading from page {startPage} to {endPage} of {maxPages} total search pages.
+        </p>
+      )}
+
+      {batchState === 'IDLE' || batchState === 'STOPPED' ? (
+        <button
+          onClick={startBatch}
+          style={{
+            width: '100%',
+            padding: '10px',
+            backgroundColor: '#007bff',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '4px',
+            fontWeight: 'bold',
+            cursor: 'pointer'
+          }}
+        >
+          Start Download
+        </button>
+      ) : (
+        <div style={{ display: 'flex', gap: '6px' }}>
+          {isRunning ? (
+            <button
+              onClick={pauseBatch}
+              style={{
+                flex: 1,
+                padding: '10px',
+                backgroundColor: '#ffc107',
+                color: '#000',
+                border: 'none',
+                borderRadius: '4px',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              Pause
+            </button>
+          ) : (
+            <button
+              onClick={resumeBatch}
+              style={{
+                flex: 1,
+                padding: '10px',
+                backgroundColor: '#28a745',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '4px',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              Resume
+            </button>
+          )}
+
+          <button
+            onClick={stopBatch}
+            style={{
+              flex: 1,
+              padding: '10px',
+              backgroundColor: '#dc3545',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '4px',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            Stop
+          </button>
+        </div>
+      )}
 
       {progress.total > 0 && (
         <div style={{ marginTop: '12px', fontSize: '13px', fontWeight: 'bold' }}>
@@ -162,7 +254,7 @@ export default function App() {
         </div>
       )}
 
-      {status && <p style={{ marginTop: '8px', fontSize: '12px', color: '#333' }}>{status}</p>}
+      {statusText && <p style={{ marginTop: '8px', fontSize: '12px', color: '#333' }}>{statusText}</p>}
     </div>
   );
 }

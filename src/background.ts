@@ -1,41 +1,55 @@
 // src/background.ts
 
+type BatchStatusState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED';
+
 interface QueueState {
   queue: string[];
   currentIndex: number;
   activeTabId: number | null;
-  isRunning: boolean;
+  status: BatchStatusState;
 }
 
 let state: QueueState = {
   queue: [],
   currentIndex: 0,
   activeTabId: null,
-  isRunning: false
+  status: 'IDLE'
 };
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'START_BATCH') {
     state.queue = message.links;
     state.currentIndex = 0;
-    state.isRunning = true;
-    updateStorageAndBroadcast(`Starting batch download of ${state.queue.length} items...`);
+    state.status = 'RUNNING';
+    updateStorageAndBroadcast(`Starting download queue (0/${state.queue.length})...`);
     processNextInQueue();
     sendResponse({ status: 'started' });
-  } else if (message.type === 'GET_STATUS') {
-    sendResponse({
-      isRunning: state.isRunning,
-      currentIndex: state.currentIndex,
-      total: state.queue.length
-    });
+  } else if (message.type === 'PAUSE_BATCH') {
+    state.status = 'PAUSED';
+    updateStorageAndBroadcast('Batch paused.');
+    sendResponse({ status: 'paused' });
+  } else if (message.type === 'RESUME_BATCH') {
+    if (state.status === 'PAUSED') {
+      state.status = 'RUNNING';
+      updateStorageAndBroadcast(`Resuming download (${state.currentIndex}/${state.queue.length})...`);
+      processNextInQueue();
+    }
+    sendResponse({ status: 'resumed' });
+  } else if (message.type === 'STOP_BATCH') {
+    state.status = 'STOPPED';
+    cleanupActiveTab();
+    state.queue = [];
+    state.currentIndex = 0;
+    updateStorageAndBroadcast('Batch stopped.');
+    sendResponse({ status: 'stopped' });
   }
   return true;
 });
 
 async function updateStorageAndBroadcast(statusText: string) {
   const payload = {
-    batchStatus: statusText,
-    batchIsRunning: state.isRunning,
+    batchStatusText: statusText,
+    batchState: state.status,
     batchProgress: {
       current: state.currentIndex,
       total: state.queue.length
@@ -45,40 +59,43 @@ async function updateStorageAndBroadcast(statusText: string) {
   chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', ...payload });
 }
 
-async function processNextInQueue() {
-  if (state.currentIndex >= state.queue.length) {
-    state.isRunning = false;
-    if (state.activeTabId) {
-      try {
-        await chrome.tabs.remove(state.activeTabId);
-      } catch (e) {}
-      state.activeTabId = null;
+async function cleanupActiveTab() {
+  if (state.activeTabId !== null) {
+    try {
+      await chrome.tabs.remove(state.activeTabId);
+    } catch (e) {
+      // Tab may already be closed
     }
-    await updateStorageAndBroadcast('Batch process completed!');
+    state.activeTabId = null;
+  }
+}
+
+async function processNextInQueue() {
+  if (state.status !== 'RUNNING') return;
+
+  if (state.currentIndex >= state.queue.length) {
+    state.status = 'IDLE';
+    await cleanupActiveTab();
+    await updateStorageAndBroadcast('All downloads completed successfully!');
     return;
   }
+
+  // Ensure previous tab is closed before starting the next item
+  await cleanupActiveTab();
 
   const currentUrl = state.queue[state.currentIndex];
   const progressMsg = `Downloading ${state.currentIndex + 1} of ${state.queue.length}...`;
   await updateStorageAndBroadcast(progressMsg);
 
-  if (!state.activeTabId) {
-    const tab = await chrome.tabs.create({ url: currentUrl, active: true });
-    state.activeTabId = tab.id || null;
-  } else {
-    try {
-      await chrome.tabs.update(state.activeTabId, { url: currentUrl, active: true });
-    } catch (e) {
-      const tab = await chrome.tabs.create({ url: currentUrl, active: true });
-      state.activeTabId = tab.id || null;
-    }
-  }
+  // Open download page in the background (active: false keeps focus on current tab)
+  const tab = await chrome.tabs.create({ url: currentUrl, active: false });
+  state.activeTabId = tab.id || null;
 
-  let Handled = false;
+  let handled = false;
 
   const downloadListener = (downloadItem: chrome.downloads.DownloadItem) => {
-    if (downloadItem && !Handled) {
-      Handled = true;
+    if (downloadItem && !handled) {
+      handled = true;
       chrome.downloads.onCreated.removeListener(downloadListener);
       advanceQueue();
     }
@@ -86,18 +103,22 @@ async function processNextInQueue() {
 
   chrome.downloads.onCreated.addListener(downloadListener);
 
+  // 25-second timeout safeguard in case stream fails to trigger
   setTimeout(() => {
-    if (!Handled) {
-      Handled = true;
+    if (!handled && state.status === 'RUNNING') {
+      handled = true;
       chrome.downloads.onCreated.removeListener(downloadListener);
       advanceQueue();
     }
   }, 25000);
 }
 
-function advanceQueue() {
-  state.currentIndex++;
-  setTimeout(() => {
-    processNextInQueue();
-  }, 2000);
+async function advanceQueue() {
+  await cleanupActiveTab();
+  if (state.status === 'RUNNING') {
+    state.currentIndex++;
+    setTimeout(() => {
+      processNextInQueue();
+    }, 2000);
+  }
 }
