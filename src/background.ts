@@ -25,7 +25,6 @@ const load = async (): Promise<QueueState> => ({
 
 const save = (s: QueueState) => chrome.storage.local.set({ [KEY]: s });
 
-// Serialize all handlers so they can't interleave across awaits
 let chain: Promise<unknown> = Promise.resolve();
 const locked = <T>(fn: () => Promise<T>): Promise<T> => {
   const p = chain.then(fn, fn);
@@ -54,6 +53,11 @@ chrome.runtime.onInstalled.addListener(async () => {
   }
 });
 
+// Added console log to trace tab creation source
+chrome.tabs.onCreated.addListener((t) =>
+  console.log('CREATED', t.id, 'opener:', t.openerTabId, 'url:', t.pendingUrl || t.url)
+);
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'START_BATCH') {
     locked(async () => {
@@ -64,7 +68,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         status: 'RUNNING'
       };
       await save(state);
-      await updateStorageAndBroadcast(`Starting batch queue (0/${state.queue.length})...`, state);
+      await updateStorageState(`Starting batch queue (0/${state.queue.length})...`, state);
       processNextInQueue();
     });
     sendResponse({ status: 'started' });
@@ -73,7 +77,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const state = await load();
       state.status = 'PAUSED';
       await save(state);
-      await updateStorageAndBroadcast('Batch paused.', state);
+      await updateStorageState('Batch paused.', state);
     });
     sendResponse({ status: 'paused' });
   } else if (message.type === 'RESUME_BATCH') {
@@ -82,7 +86,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (state.status === 'PAUSED') {
         state.status = 'RUNNING';
         await save(state);
-        await updateStorageAndBroadcast(`Resuming (${state.currentIndex}/${state.queue.length})...`, state);
+        await updateStorageState(`Resuming (${state.currentIndex}/${state.queue.length})...`, state);
         processNextInQueue();
       }
     });
@@ -95,33 +99,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       state.queue = [];
       state.currentIndex = 0;
       await save(state);
-      await updateStorageAndBroadcast('Batch stopped.', state);
+      await updateStorageState('Batch stopped.', state);
     });
     sendResponse({ status: 'stopped' });
   }
   return true;
 });
 
-async function updateStorageAndBroadcast(statusText: string, state: QueueState) {
-  const payload = {
+async function updateStorageState(statusText: string, state: QueueState) {
+  await chrome.storage.local.set({
     batchStatusText: statusText,
     batchState: state.status,
     batchProgress: {
       current: state.currentIndex,
       total: state.queue.length
     }
-  };
-  await chrome.storage.local.set(payload);
-  chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', ...payload });
+  });
 }
 
 async function cleanupWorkerTab(state: QueueState) {
   if (state.activeWorkerTabId !== null) {
     try {
       await chrome.tabs.remove(state.activeWorkerTabId);
-    } catch (e) {
-      // Tab already closed
-    }
+    } catch (e) {}
     state.activeWorkerTabId = null;
   }
 }
@@ -135,7 +135,7 @@ async function processNextInQueue() {
       state.status = 'IDLE';
       await cleanupWorkerTab(state);
       await save(state);
-      await updateStorageAndBroadcast('All downloads completed successfully!', state);
+      await updateStorageState('All downloads completed successfully!', state);
       return;
     }
 
@@ -143,9 +143,8 @@ async function processNextInQueue() {
 
     const currentUrl = state.queue[state.currentIndex];
     const progressMsg = `Downloading ${state.currentIndex + 1} of ${state.queue.length}...`;
-    await updateStorageAndBroadcast(progressMsg, state);
+    await updateStorageState(progressMsg, state);
 
-    // Open item in background tab
     const tab = await chrome.tabs.create({ url: currentUrl, active: false });
     state.activeWorkerTabId = tab.id || null;
     await save(state);
@@ -162,7 +161,6 @@ async function processNextInQueue() {
 
     chrome.downloads.onCreated.addListener(downloadListener);
 
-    // Fallback timeout
     setTimeout(() => {
       if (!handled) {
         handled = true;

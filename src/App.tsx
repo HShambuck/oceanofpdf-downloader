@@ -17,6 +17,7 @@ export default function App() {
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 0 });
 
   useEffect(() => {
+    // Initial fetch from storage on popup open
     chrome.storage.local.get(['batchStatusText', 'batchState', 'batchProgress'], (result) => {
       if (typeof result.batchStatusText === 'string') setStatusText(result.batchStatusText);
       if (typeof result.batchState === 'string') setBatchState(result.batchState as BatchStatusState);
@@ -27,18 +28,29 @@ export default function App() {
 
     detectTotalPages();
 
-    const listener = (message: any) => {
-      if (message.type === 'STATUS_UPDATE') {
-        if (typeof message.batchStatusText === 'string') setStatusText(message.batchStatusText);
-        if (typeof message.batchState === 'string') setBatchState(message.batchState as BatchStatusState);
-        if (message.batchProgress && typeof message.batchProgress === 'object') {
-          setProgress(message.batchProgress as BatchProgress);
+    // Listen for changes in chrome.storage instead of runtime messages
+    const storageListener = (
+      changes: { [key: string]: chrome.storage.StorageChange },
+      areaName: string
+    ) => {
+      if (areaName === 'local') {
+        if (typeof changes.batchStatusText?.newValue === 'string') {
+          setStatusText(changes.batchStatusText.newValue);
+        }
+        if (typeof changes.batchState?.newValue === 'string') {
+          setBatchState(changes.batchState.newValue as BatchStatusState);
+        }
+        if (
+          changes.batchProgress?.newValue &&
+          typeof changes.batchProgress.newValue === 'object'
+        ) {
+          setProgress(changes.batchProgress.newValue as BatchProgress);
         }
       }
     };
 
-    chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
+    chrome.storage.onChanged.addListener(storageListener);
+    return () => chrome.storage.onChanged.removeListener(storageListener);
   }, []);
 
   const detectTotalPages = async () => {
@@ -56,9 +68,7 @@ export default function App() {
           setEndPage(detectedMax);
         }
       }
-    } catch (e) {
-      // Permission restriction or not on target page
-    }
+    } catch (e) {}
   };
 
   const startBatch = async () => {
