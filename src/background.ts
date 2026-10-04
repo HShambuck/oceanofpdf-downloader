@@ -1,5 +1,3 @@
-// src/background.ts
-
 type BatchStatusState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED';
 
 interface QueueState {
@@ -80,14 +78,14 @@ async function processNextInQueue() {
     return;
   }
 
-  // Ensure any previous worker tab is closed before starting the next item
+  // Enforce closing any remaining worker tab before proceeding
   await cleanupWorkerTab();
 
   const currentUrl = state.queue[state.currentIndex];
   const progressMsg = `Downloading ${state.currentIndex + 1} of ${state.queue.length}...`;
   await updateStorageAndBroadcast(progressMsg);
 
-  // 1. Create a SINGLE background tab (active: false ensures focus stays on your current page)
+  // Open item in a single hidden background tab
   const tab = await chrome.tabs.create({ url: currentUrl, active: false });
   state.activeWorkerTabId = tab.id || null;
 
@@ -103,7 +101,7 @@ async function processNextInQueue() {
 
   chrome.downloads.onCreated.addListener(downloadListener);
 
-  // 25-second timeout safeguard in case download stream fails to fire
+  // Timeout safety net in case download stream fails
   setTimeout(() => {
     if (!handled && state.status === 'RUNNING') {
       handled = true;

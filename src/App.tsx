@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { parsePaginationFromDOM } from './pagination';
 
 type BatchStatusState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED';
 
@@ -46,26 +47,7 @@ export default function App() {
       if (activeTab?.id && activeTab.url?.includes('oceanofpdf.com')) {
         const results = await chrome.scripting.executeScript({
           target: { tabId: activeTab.id },
-          func: () => {
-            const numbers: number[] = [];
-            
-            // Try standard WordPress pagination elements
-            const elements = document.querySelectorAll('.page-numbers, .pagination a, .nav-links a, a.page-numbers');
-            elements.forEach((el) => {
-              const text = el.textContent?.replace(/,/g, '').trim() || '';
-              const num = parseInt(text, 10);
-              if (!isNaN(num)) numbers.push(num);
-            });
-
-            // Fallback: Check pagination info text like "Page 1 of 231"
-            const bodyText = document.body.innerText;
-            const match = bodyText.match(/Page\s+\d+\s+of\s+(\d+)/i);
-            if (match && match[1]) {
-              numbers.push(parseInt(match[1], 10));
-            }
-
-            return numbers.length > 0 ? Math.max(...numbers) : null;
-          }
+          func: parsePaginationFromDOM
         });
 
         const detectedMax = results[0]?.result;
@@ -75,7 +57,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      // Not on search page or execution restricted
+      // Not on search results page or permission restricted
     }
   };
 
