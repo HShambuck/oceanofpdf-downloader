@@ -16,7 +16,6 @@ export default function App() {
   const [progress, setProgress] = useState<BatchProgress>({ current: 0, total: 0 });
 
   useEffect(() => {
-    // Load stored state on popup open
     chrome.storage.local.get(['batchStatusText', 'batchState', 'batchProgress'], (result) => {
       if (typeof result.batchStatusText === 'string') setStatusText(result.batchStatusText);
       if (typeof result.batchState === 'string') setBatchState(result.batchState as BatchStatusState);
@@ -25,7 +24,6 @@ export default function App() {
       }
     });
 
-    // Detect total pages on active OceanofPDF tab
     detectTotalPages();
 
     const listener = (message: any) => {
@@ -49,15 +47,27 @@ export default function App() {
         const results = await chrome.scripting.executeScript({
           target: { tabId: activeTab.id },
           func: () => {
-            const pageNumbers: number[] = [];
-            const pageElements = document.querySelectorAll('.page-numbers, a.page-numbers, span.page-numbers');
-            pageElements.forEach((el) => {
-              const num = parseInt(el.textContent?.replace(/,/g, '') || '', 10);
-              if (!isNaN(num)) pageNumbers.push(num);
+            const numbers: number[] = [];
+            
+            // Try standard WordPress pagination elements
+            const elements = document.querySelectorAll('.page-numbers, .pagination a, .nav-links a, a.page-numbers');
+            elements.forEach((el) => {
+              const text = el.textContent?.replace(/,/g, '').trim() || '';
+              const num = parseInt(text, 10);
+              if (!isNaN(num)) numbers.push(num);
             });
-            return pageNumbers.length > 0 ? Math.max(...pageNumbers) : null;
+
+            // Fallback: Check pagination info text like "Page 1 of 231"
+            const bodyText = document.body.innerText;
+            const match = bodyText.match(/Page\s+\d+\s+of\s+(\d+)/i);
+            if (match && match[1]) {
+              numbers.push(parseInt(match[1], 10));
+            }
+
+            return numbers.length > 0 ? Math.max(...numbers) : null;
           }
         });
+
         const detectedMax = results[0]?.result;
         if (detectedMax) {
           setMaxPages(detectedMax);
@@ -158,7 +168,7 @@ export default function App() {
         </div>
         <div style={{ flex: 1 }}>
           <label style={{ fontSize: '12px', display: 'block', marginBottom: '4px' }}>
-            To Page: {maxPages ? `(Max: ${maxPages})` : ''}
+            To Page: {maxPages ? `(of ${maxPages})` : ''}
           </label>
           <input
             type="number"
@@ -174,7 +184,7 @@ export default function App() {
 
       {maxPages && (
         <p style={{ fontSize: '11px', color: '#666', margin: '0 0 12px 0' }}>
-          Downloading from page {startPage} to {endPage} of {maxPages} total search pages.
+          Detected search range: Page {startPage} to {endPage} of {maxPages} total pages.
         </p>
       )}
 

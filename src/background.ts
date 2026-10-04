@@ -5,14 +5,14 @@ type BatchStatusState = 'IDLE' | 'RUNNING' | 'PAUSED' | 'STOPPED';
 interface QueueState {
   queue: string[];
   currentIndex: number;
-  activeTabId: number | null;
+  activeWorkerTabId: number | null;
   status: BatchStatusState;
 }
 
 let state: QueueState = {
   queue: [],
   currentIndex: 0,
-  activeTabId: null,
+  activeWorkerTabId: null,
   status: 'IDLE'
 };
 
@@ -21,7 +21,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     state.queue = message.links;
     state.currentIndex = 0;
     state.status = 'RUNNING';
-    updateStorageAndBroadcast(`Starting download queue (0/${state.queue.length})...`);
+    updateStorageAndBroadcast(`Starting batch queue (0/${state.queue.length})...`);
     processNextInQueue();
     sendResponse({ status: 'started' });
   } else if (message.type === 'PAUSE_BATCH') {
@@ -37,7 +37,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ status: 'resumed' });
   } else if (message.type === 'STOP_BATCH') {
     state.status = 'STOPPED';
-    cleanupActiveTab();
+    cleanupWorkerTab();
     state.queue = [];
     state.currentIndex = 0;
     updateStorageAndBroadcast('Batch stopped.');
@@ -59,14 +59,14 @@ async function updateStorageAndBroadcast(statusText: string) {
   chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', ...payload });
 }
 
-async function cleanupActiveTab() {
-  if (state.activeTabId !== null) {
+async function cleanupWorkerTab() {
+  if (state.activeWorkerTabId !== null) {
     try {
-      await chrome.tabs.remove(state.activeTabId);
+      await chrome.tabs.remove(state.activeWorkerTabId);
     } catch (e) {
       // Tab may already be closed
     }
-    state.activeTabId = null;
+    state.activeWorkerTabId = null;
   }
 }
 
@@ -75,21 +75,21 @@ async function processNextInQueue() {
 
   if (state.currentIndex >= state.queue.length) {
     state.status = 'IDLE';
-    await cleanupActiveTab();
+    await cleanupWorkerTab();
     await updateStorageAndBroadcast('All downloads completed successfully!');
     return;
   }
 
-  // Ensure previous tab is closed before starting the next item
-  await cleanupActiveTab();
+  // Ensure any previous worker tab is closed before starting the next item
+  await cleanupWorkerTab();
 
   const currentUrl = state.queue[state.currentIndex];
   const progressMsg = `Downloading ${state.currentIndex + 1} of ${state.queue.length}...`;
   await updateStorageAndBroadcast(progressMsg);
 
-  // Open download page in the background (active: false keeps focus on current tab)
+  // 1. Create a SINGLE background tab (active: false ensures focus stays on your current page)
   const tab = await chrome.tabs.create({ url: currentUrl, active: false });
-  state.activeTabId = tab.id || null;
+  state.activeWorkerTabId = tab.id || null;
 
   let handled = false;
 
@@ -103,7 +103,7 @@ async function processNextInQueue() {
 
   chrome.downloads.onCreated.addListener(downloadListener);
 
-  // 25-second timeout safeguard in case stream fails to trigger
+  // 25-second timeout safeguard in case download stream fails to fire
   setTimeout(() => {
     if (!handled && state.status === 'RUNNING') {
       handled = true;
@@ -114,11 +114,11 @@ async function processNextInQueue() {
 }
 
 async function advanceQueue() {
-  await cleanupActiveTab();
+  await cleanupWorkerTab();
   if (state.status === 'RUNNING') {
     state.currentIndex++;
     setTimeout(() => {
       processNextInQueue();
-    }, 2000);
+    }, 1500);
   }
 }

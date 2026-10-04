@@ -3,12 +3,17 @@
 (async () => {
   const currentUrl = window.location.href;
 
-  // STEP 1: If on a Book Detail Page, find and dispatch genuine click on PDF image button
+  // STEP 1: Handle Book Detail Page
   if (currentUrl.includes('oceanofpdf.com/') && !currentUrl.includes('?s=')) {
+    const pdfForm = document.querySelector('form[action*="Fetching_Resource"], form') as HTMLFormElement;
     const pdfBtn = document.querySelector('input[type="image"][src*="pdf"], input[type="image"]') as HTMLInputElement;
 
+    if (pdfForm) {
+      // Prevent form from opening target="_blank" in a new focused tab
+      pdfForm.removeAttribute('target');
+    }
+
     if (pdfBtn) {
-      // Simulate authentic mouse click with coordinates
       const rect = pdfBtn.getBoundingClientRect();
       const clickEvent = new MouseEvent('click', {
         bubbles: true,
@@ -18,12 +23,6 @@
         clientY: rect.top + rect.height / 2
       });
       pdfBtn.dispatchEvent(clickEvent);
-      chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', message: 'Triggered PDF form submission...' });
     }
-  }
-
-  // STEP 2: If on degital5 timer page, let its internal JS run
-  if (currentUrl.includes('degital5.com')) {
-    chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', message: 'On timer page. Awaiting download stream...' });
   }
 })();
